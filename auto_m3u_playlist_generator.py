@@ -12,7 +12,7 @@ How To Use:
 
 TODO:
     [] Create log file.
-    [] Loop instead of close after task finishes.
+    [X] Loop instead of close after task finishes.
     [X] Handle games that may be split into different directories but with the same name
         (compilation discs). Option to not make a playlist for them as they are technically
         different games from the same package.
@@ -26,9 +26,13 @@ import re
 import sys
 
 
+# Script will close after the initial searches are performed. If below is set to True you may
+# keep dropping additional directories to search through.
+loop_script = False
+
 # Make different playlists for different disc formats even if they have the same game title.
-# If for some reason you have your games in multiple formats. Format/extension will be added
-# to playlist file names.
+# If for some reason you have your games in multiple formats. The format/extension will be
+# added to playlist file names.
 seperate_disc_format_playlists = False
 
 # If you don't want existing playlist files overwritten, make False.
@@ -70,6 +74,7 @@ ignore_compilation_discs = True
 # First type of detecting compilation discs is if they're in "different directories", and
 # therefore you may want to save the playlist in the directory above the location of those
 # discs else it will save the playlist in the first disc's directory.
+# Note: This is only if the compilation discs are found in different directories.
 save_compilation_playlists_one_level_up = True
 
 
@@ -81,7 +86,7 @@ def findMultiDiscGames(dir_path):
     possible_compilation_games_found = []
     playlist_count = 0
     
-    print('--------------------------------------------------------------------------')
+    print('\n--------------------------------------------------------------------------')
     print(f'Searching Directory For Multi-Disc Games: {dir_path}')
     print('--------------------------------------------------------------------------\n')
     
@@ -263,7 +268,6 @@ def findMultiDiscGames(dir_path):
 ###     (game_info_list_two) Second "Game Info" list.
 ###     --> Returns a [List]
 def compareTwoGameInfoLists(game_info_list_one, game_info_list_two):
-    
     all_game_info_list = []
     matching_game_info_list = []
     
@@ -285,7 +289,6 @@ def compareTwoGameInfoLists(game_info_list_one, game_info_list_two):
 ###     (playlist_count) Amount of playlist to be created.
 ###     --> Returns a [Integer] and [Integer]
 def createPlaylists(multi_disc_games_found, playlist_count):
-    
     new_playlists_created = 0
     playlists_overwritten = 0
     
@@ -309,17 +312,27 @@ def createPlaylists(multi_disc_games_found, playlist_count):
                 
                 if Path.exists(playlist_path) and overwrite_playlists:
                     overwrite = True
+                    playlists_overwritten += 1
                 elif Path.exists(playlist_path) and not overwrite_playlists:
                     overwrite = False
                 else:
                     overwrite = True
+                    new_playlists_created += 1
                 
                 if overwrite:
-                    new_playlists_created += 1
                     playlist_path.write_text('\n'.join([str(path) for path in game_disc_paths]),
                                              encoding='utf-8', errors=None, newline=None)
     
     return new_playlists_created, playlists_overwritten
+
+
+### Create log file for all playlists created.
+###     (all_playlist_data) .
+###     --> Returns a [Boolean]
+def createLogFile(all_playlist_data):
+    log_file_created = False
+    ## TODO
+    return log_file_created
 
 
 ### Script Starts Here
@@ -327,7 +340,7 @@ if __name__ == '__main__':
     print(sys.version)
     print('\n=======================================')
     print('Auto M3U Playlist Generator by JDHatten')
-    print('=======================================\n')
+    print('=======================================')
     MIN_VERSION = (3,4,0)
     MIN_VERSION_STR = '.'.join([str(n) for n in MIN_VERSION])
     assert sys.version_info >= MIN_VERSION, f'This Script Requires Python v{MIN_VERSION_STR} or Newer'
@@ -338,23 +351,39 @@ if __name__ == '__main__':
     if not dir_paths:
         dir_paths = [os.path.dirname(os.path.abspath(__file__))]
     
-    i = 0
-    for dir_path in dir_paths:
-        multi_disc_games_found, playlist_count = findMultiDiscGames(dir_path)
-        if playlist_count:
-            s = 's' if playlist_count > 1 else ''
-            input(f'\nAll data retrieved and ready to create playlists for {playlist_count} multi-disc game{s}. Press [ENTER] to start...')
-            new_playlists_created, playlists_overwritten = createPlaylists(multi_disc_games_found, playlist_count)
-            if new_playlists_created or playlists_overwritten:
-                print(f'\nNew Playlists Created: {new_playlists_created}')
-                print(f'Playlists Overwritten: {playlists_overwritten}')
+    loop = True
+    while loop:
+        i = 0
+        for dir_path in dir_paths:
+            multi_disc_games_found, playlist_count = findMultiDiscGames(dir_path)
+            if playlist_count:
+                s = 's' if playlist_count > 1 else ''
+                input(f'\nAll data retrieved and ready to create playlists for {playlist_count} multi-disc game{s}. Press [ENTER] to start...')
+                new_playlists_created, playlists_overwritten = createPlaylists(multi_disc_games_found, playlist_count)
+                if new_playlists_created or playlists_overwritten:
+                    print(f'\nNew Playlists Created: {new_playlists_created}')
+                    print(f'Playlists Overwritten: {playlists_overwritten}')
+                else:
+                    print('No Playlists Created')
             else:
-                print('No Playlists Created')
-        else:
-            print('\nNo multi-disc games found.')
-        i =+ 1
-        if len(dir_paths) > i:
-            input(f'\nPress [Enter] to continue with next directory... {dir_paths[i]}')
-        else:
-            input('\nAll Done!')
-        
+                print('\nNo multi-disc games found.')
+            i =+ 1
+            if len(dir_paths) > i:
+                input(f'\nPress [Enter] to continue with next directory... {dir_paths[i]}')
+            else:
+                #print('\nAll Done!')
+                try_again = loop_script
+                loop = loop_script
+                while try_again:
+                    dir = input('\nDrop another directory here to keep searching or press [Enter] to close: ')# and create a log file now:')
+                    dir = dir.replace('"', '')
+                    ## TODO: multiple dir split?
+                    dir_path = Path(dir)
+                    if dir == '':
+                        loop = False
+                        try_again = False
+                    elif Path.exists(dir_path):
+                        dir_paths = [dir_path]
+                        try_again = False
+                    else:
+                        print(f'This is not an existing directory path: "{dir}"')
