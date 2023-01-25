@@ -11,14 +11,15 @@ How To Use:
     root game directory.
 
 TODO:
-    [] Create log file.
+    [X] Create log file.
     [X] Loop instead of close after task finishes.
     [X] Handle games that may be split into different directories but with the same name
         (compilation discs). Option to not make a playlist for them as they are technically
         different games from the same package.
     [X] Detect multi-disc games without disc numbers, but with disc titles or version text.
-    [] Relative disc paths in playlists.
-    [] Update existing playlists only if new links are to be added/removed/reorderd. Option to not reorder.
+    [] Option for relative disc paths in playlists.
+    [] Option to save all playlist in a single separate directory.
+    [] Update existing playlists only if new links are to be added/removed/reordered. Option to not reorder.
 
 '''
 
@@ -45,8 +46,8 @@ disc_extensions = { '.chd'     :     'CHD',  # A CHD image file (Compressed Hunk
                   }
 
 # This script will automatically make separate playlists for different disc formats of the
-# same game titles. If you have any of your games in multiple formats and want them all placed
-# in the same playlist, set this to True. It's also possible for example, you have disc 1 in
+# same game. If you have any of your games in multiple formats and want them all placed in
+# the same playlist, set this to True. It's also possible for example, you have disc 1 in
 # one format format and disc 2 in another format, and therefore need to force combine them.
 # Note: The disc format/extension will be added to playlist file names if separated (CHD).
 force_combine_disc_formats = False
@@ -78,9 +79,14 @@ re_game_info_pattern = re.compile( '\s*[' + '\(|\[|\{' + '][' +
 # If you edit the disc regular expression pattern you should know what group holds the disc
 # number and update "re_disc_number_group". A group is the text found inside (parentheses).
 re_disc_number_group = 4
-re_disc_pattern = re.compile( '(\s*)' + '(\(|\[)' + '(CD|Disc|Disk|Game)' +
+re_disc_pattern = re.compile( '(\s*)' + '(\(|\[)' + '(CD|Disc|Disk|DVD|Game)' +
                               '\s*(\d+)\s*\w*\s*(\d*)*' + '(\)|\])',
                               re.IGNORECASE ) # Examples: "(Disc 1 of 3)", "[CD2]", etc
+
+# Create a log file that will record all the details of each playlist created, which includes
+# the full file paths of the playlists and the disc image files recorded.
+# Note: Log file creation is always overwritten, not appended too.
+create_log_file = True
 
 
 ### Don't Edit Below This Line ###
@@ -88,6 +94,7 @@ LOG_DATA = 137
 NOT_SAVED = 0
 SAVED = 1
 OVERWRITTEN = 2
+ERROR_NOT_SAVED = 3
 GAME_TYPE = 0
 MULTI_DISC = 10
 COMPILATION = 11
@@ -478,15 +485,14 @@ def setMultDiscGameType(multi_disc_games_found, game, game_type = MULTI_DISC):
 ###                              the playlist to be created with the paths to each disc.
 ###     --> Returns a [Dictionary]
 def createPlaylists(multi_disc_games_found):
-    playlists_not_created = 0
-    new_playlists_created = 0
-    playlists_overwritten = 0
-    playlist_created = 0
+    playlists_not_created, new_playlists_created = 0,0
+    playlists_overwritten, playlists_save_errors = 0,0
+    playlist_creation = NOT_SAVED
     
     multi_disc_games_found_copy = multi_disc_games_found.copy()
     
     if LOG_DATA not in multi_disc_games_found.keys():
-        multi_disc_games_found[LOG_DATA] = [0,0,0]
+        multi_disc_games_found[LOG_DATA] = [0,0,0,0]
     
     print('\n--------------------------------------------------------------------------')
     print('Now creating M3U Playlists For All Multi-Disc Games Found')
@@ -502,17 +508,18 @@ def createPlaylists(multi_disc_games_found):
             #if len(game_disc_paths) > 1 and type(playlist_path).__name__.find('Path') > -1:
             if playlist_path != LOG_DATA and len(game_disc_paths) > 1:
                 
-                if playlist_number == 0:
+                playlist_number += 1
+                
+                if len(multi_disc_games_found[game][LOG_DATA]) > playlist_number:
+                    continue # This playlist creation already attempted, no need to retry.
+                
+                if playlist_number == 1:
                     print('--------------------------------------------------------------------------')
                     if multi_disc_games_found[game].get(LOG_DATA, [MULTI_DISC])[GAME_TYPE]:
                         print(f'-Compilation Game Title: {game.name}')
                     else:
                         print(f'-Multi-Disc Game Title: {game.name}')
                     print('--------------------------------------------------------------------------')
-                
-                playlist_number += 1
-                if len(multi_disc_games_found[game][LOG_DATA]) > playlist_number:
-                    continue # This playlist creation already attempted, no need to retry. 
                 
                 print(f'--Playlist Path: {playlist_path}')
                 
@@ -523,24 +530,35 @@ def createPlaylists(multi_disc_games_found):
                 
                 if Path.exists(playlist_path) and overwrite_playlists:
                     playlists_overwritten += 1
-                    playlist_created = OVERWRITTEN
+                    playlist_creation = OVERWRITTEN
                     
                 elif Path.exists(playlist_path) and not overwrite_playlists:
                     playlists_not_created += 1
-                    playlist_created = NOT_SAVED
+                    playlist_creation = NOT_SAVED
                 else:
                     new_playlists_created += 1
-                    playlist_created = SAVED
+                    playlist_creation = SAVED
                 
-                multi_disc_games_found[game][LOG_DATA].append(playlist_created)
+                if playlist_creation > NOT_SAVED:
+                    try:
+                        playlist_path.write_text('\n'.join([str(path) for path in game_disc_paths]),
+                                                 encoding='utf-8', errors='strict', newline=None)
+                    except Exception as error:
+                        print(f'\nCouldn\'t save playlist file due to {type(error).__name__}: {type(error).__doc__}')
+                        print(f'{error}\n')
+                        if playlist_creation == OVERWRITTEN:
+                            playlists_overwritten -= 1
+                        elif playlist_creation == SAVED:
+                            new_playlists_created -= 1
+                        playlists_save_errors += 1
+                        playlist_creation = f'{type(error).__name__}: {type(error).__doc__}'
                 
-                if playlist_created >= 1:
-                    playlist_path.write_text('\n'.join([str(path) for path in game_disc_paths]),
-                                             encoding='utf-8', errors=None, newline=None) ## TODO handle errors
+                multi_disc_games_found[game][LOG_DATA].append(playlist_creation)
     
     multi_disc_games_found[LOG_DATA][NOT_SAVED] += playlists_not_created
     multi_disc_games_found[LOG_DATA][SAVED] += new_playlists_created
     multi_disc_games_found[LOG_DATA][OVERWRITTEN] += playlists_overwritten
+    multi_disc_games_found[LOG_DATA][ERROR_NOT_SAVED] += playlists_save_errors
     
     return multi_disc_games_found
 
@@ -551,18 +569,136 @@ def createPlaylists(multi_disc_games_found):
 ###     --> Returns a [Boolean]
 def createLogFile(multi_disc_games_found):
     log_file_created = False
-    ## TODO
-    print('TODO: createLogFile')
     
     if type(multi_disc_games_found) == dict and multi_disc_games_found.get(LOG_DATA):
         playlists_not_created = multi_disc_games_found[LOG_DATA][NOT_SAVED]
         new_playlists_created = multi_disc_games_found[LOG_DATA][SAVED]
         playlists_overwritten = multi_disc_games_found[LOG_DATA][OVERWRITTEN]
+        playlists_save_errors = multi_disc_games_found[LOG_DATA][ERROR_NOT_SAVED]
     else:
         print('\nSomething went wrong creating log file.')
         return False
     
+    # Print general details of playlist creation
+    text_lines = []
+    text_lines.append('===================================')
+    text_lines.append('= Auto M3U Playlist Generator Log =')
+    text_lines.append('===================================')
+    text_lines.append(f'- New Playlist Created: {new_playlists_created}')
+    if overwrite_playlists:
+        text_lines.append(f'- Playlist Overwritten: {playlists_overwritten}')
+    elif playlists_not_created:
+        text_lines.append(f'- Playlist Not Created: {playlists_not_created}')
+    if playlists_save_errors:
+        text_lines.append(f'- Playlist Save Errors: {playlists_save_errors}')
+    
+    print_text_lines = text_lines.copy()
+    print('\n'+'\n'.join(print_text_lines))
+    
+    if new_playlists_created + playlists_overwritten == 0:
+        return False
+    
+    if create_log_file:
+        
+        root_path = Path(__file__).parent
+        log_file_name = f'{Path(__file__).stem}__log.txt'
+        log_file_path = Path(PurePath().joinpath(root_path, log_file_name))
+        
+        # Separate by game type
+        multi_disc_games = []
+        compilation_games = []
+        diff_version_games = []
+        #unknown_games = []
+        for game, playlists in multi_disc_games_found.items():
+            if game == LOG_DATA: continue
+            game_log_data = playlists.get(LOG_DATA)
+            
+            for playlist_path, game_disc_paths in playlists.items():
+                if playlist_path == LOG_DATA: continue
+                
+                if game_log_data:
+                    if game_log_data[GAME_TYPE] == MULTI_DISC:
+                        if game not in multi_disc_games:
+                            multi_disc_games.append(game)
+                    
+                    elif game_log_data[GAME_TYPE] == COMPILATION:
+                        if game not in compilation_games:
+                            compilation_games.append(game)
+                    
+                    elif game_log_data[GAME_TYPE] == DIFF_VERSION:
+                        if game not in diff_version_games:
+                            diff_version_games.append(game)
+        
+        # Print out playlist sorted by game type
+        if multi_disc_games:
+            text_lines.append('\n---------------------------------')
+            text_lines.append('Multi-Disc Game Playlists Created')
+            text_lines.append('---------------------------------')
+        for game in multi_disc_games:
+            text_lines = printGamePlaylistDetails(multi_disc_games_found, game, text_lines)
+        
+        if compilation_games:
+            text_lines.append('\n----------------------------------')
+            text_lines.append('Compilation Game Playlists Created')
+            text_lines.append('----------------------------------')
+        for game in compilation_games:
+            text_lines = printGamePlaylistDetails(multi_disc_games_found, game, text_lines)
+        
+        if diff_version_games: ## TODO:
+            text_lines.append('\n-----------------------------------------')
+            text_lines.append('Different Game Versions Playlists Created')
+            text_lines.append('-----------------------------------------')
+        for game in diff_version_games:
+            text_lines = printGamePlaylistDetails(multi_disc_games_found, game, text_lines)
+        
+        # Write Log File
+        try:
+            log_file_path.write_text('\n'.join(text_lines), encoding='utf-8', errors='strict', newline=None)
+            log_file_created = log_file_path # return log file path
+        except Exception as error:
+            print(f'\nCouldn\'t save log file due to {type(error).__name__}: {type(error).__doc__}')
+            print(f'{error}\n')
+    
+    else:
+        print('Log file creation turned off.')
+    
     return log_file_created
+
+
+### This will print out each playlist a game has for use in the creation of a log file.
+###     (multi_disc_games_found) Dictionary of all multi-disc games and the file paths of
+###                              the playlist to be created with the paths to each disc.
+###     (game) The game to have its playlists printed out.
+###     (text_lines) A list of lines to be printed.
+###     --> Returns a [List]
+def printGamePlaylistDetails(multi_disc_games_found, game, text_lines = []):
+    playlist_creation = ['  << Already Exists / Not Overwritten >>', # NOT_SAVED
+                         '  << NEW >>', # SAVED
+                         '', # OVERWRITTEN
+                         '  << Not Saved Due To'] # ERROR_NOT_SAVED
+    game_log_data = multi_disc_games_found[game].get(LOG_DATA, [0,0,0,0])
+    
+    playlist_number = 1
+    for playlist_path, game_disc_paths in multi_disc_games_found[game].items():
+        if playlist_path == LOG_DATA: continue
+        
+        if playlist_number == 1:
+            text_lines.append(f'\n-Game Title: {game.name}')
+        
+        if type(game_log_data[playlist_number]) == int:
+            save_info = playlist_creation[game_log_data[playlist_number]]
+        else: # Error
+            save_info = f'{playlist_creation[ERROR_NOT_SAVED]} {game_log_data[playlist_number]} >>'
+        
+        text_lines.append(f'--Playlist Path: {playlist_path}{save_info}')
+        playlist_number += 1
+        
+        disc_number = 1
+        while disc_number <= len(game_disc_paths):
+            text_lines.append(f'---Disc #{disc_number} Path: {game_disc_paths[disc_number-1]}')
+            disc_number += 1
+    
+    return text_lines
 
 
 ### Script Starts Here
@@ -576,14 +712,12 @@ if __name__ == '__main__':
     assert sys.version_info >= MIN_VERSION, f'This Script Requires Python v{MIN_VERSION_STR} or Newer'
     
     dir_paths = sys.argv[1:]
-    multi_disc_games_found = {}
-    new_playlists_created, playlists_overwritten = 0,0
-    
     if not dir_paths:
         dir_paths = [Path(__file__).parent]
     
+    multi_disc_games_found = {}
+    new_playlists_created, playlists_overwritten, n = 0,0,0
     loop = True
-    n = 0
     while loop:
         i = 0
         for dir_path in dir_paths:
@@ -623,7 +757,7 @@ if __name__ == '__main__':
                 try_again = loop_script
                 loop = loop_script
                 while try_again:
-                    dir = input('\nDrop another directory here to keep searching or press [Enter] to close and create a log file now:')
+                    dir = input('\nDrop another directory here to keep searching or press [Enter] to close and create a log file now: ')
                     dir = dir.replace('"', '')
                     ## TODO: one at a time or multiple dir split?
                     dir_path = Path(dir)
@@ -638,5 +772,5 @@ if __name__ == '__main__':
     
     log_file_created = createLogFile(multi_disc_games_found)
     if log_file_created:
-        print('Log File Created')
-        #open it
+        print('--> Check log for more details.')
+        OpenFile(log_file_created)
