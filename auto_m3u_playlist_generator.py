@@ -24,29 +24,30 @@ TODO:
 
 '''
 
-# This script will close after the initial searches are performed, but if this is set to True
-# the script will continue to run and you may keep dropping additional directories to search.
+# This script will continue to run alowing the dropping of additional directories to search.
+# Set this to False and this script will just run, create the playlists, and close.
 loop_script = True
 
 # If you don't want existing playlist files overwritten, set this to False.
 overwrite_playlists = True
 
-# If your game's disc image format is not included below add it now. You can comment out
-# extensions/formats you don't want to create playlists for.
-#                  File Extension   Format Name (used in playlist file names when separated)
-disc_extensions = { '.chd'     :     'CHD',  # A CHD image file (Compressed Hunks of Data)
-                    '.cue'     :     'CUE',  # Used with BIN and IMG image files
-                    '.iso'     :     'ISO',  # An ISO image file
-                   #'.mds'     :     'MDS',  # Used with MDF image files (Media Descriptor File/Sidecar)
+# If your game's disc image format is not included below add it now.
+# 1. Image File Extension
+# 2. Image Format Name (used in playlist file names, only when separated)
+# 3. Search Enabled (if false extension will be ignored in searches)
+disc_extensions = { '.chd' : ['CHD', True],  # A CHD image file (Compressed Hunks of Data)
+                    '.cue' : ['CUE', True],  # Used with BIN and IMG image files
+                    '.iso' : ['ISO', True],  # An ISO image file
+                    '.mds' : ['MDS', False], # Used with MDF image files (Media Descriptor File/Sidecar)
                   }
 
-# Use relative disc paths in playlists instead of full absolute paths for better portability.
+# Use relative disc paths in playlists instead of full absolute paths, for better portability.
 use_relative_paths = False
 
 # This script will automatically make separate playlists for different disc formats of the
 # same game. If you have any of your games in multiple formats and want them all placed in
 # the same playlist, set this to True. It's also possible for example, you have disc 1 in
-# one format format and disc 2 in another format, and therefore need to force combine them.
+# one format and disc 2 in another format, and therefore need to force combine them.
 # Note: The disc format/extension will be added to playlist file names if separated "(CHD)".
 force_combine_disc_formats = False
 
@@ -58,11 +59,10 @@ force_combine_disc_formats = False
 # 3. Same "Game Title" with no disc numbers but possible extra "version" text found in "Game Info".
 ignore_compilation_discs = False
 
-# First type of detecting compilation discs is if they're in "different directories", and
-# therefore you may want to save the playlist in the directory above the location of those
-# discs else it will save the playlist in the first disc's directory.
-# Note: This is only if the compilation discs are found in different directories.
-save_compilation_playlists_one_level_up = True
+# If a compilation game is detected with discs in different directories, save the playlist in
+# a common directory one or more levels up. If set to False the playlist will be saved in the
+# directory of the first disc found.
+save_playlists_in_common_directory = True
 
 # You shouldn't have to edit these as they just get the "Game Title" and "Game Info" text.
 # However, if you have some unique file naming conventions for your games and know how to
@@ -77,12 +77,12 @@ re_game_info_pattern = ( '\s*[' + '\(|\[|\{' + '][' +
 # If you edit the disc regular expression pattern you should know what group holds the disc
 # number and update "re_disc_number_group". A group is the text found inside (parentheses).
 re_disc_number_group = 4
-# Examples: "(Disc 1 of 3)", "[CD2]", etc
-re_disc_info_pattern = ( '(\s*)' + '(\(|\[)' + '(CD|Disc|Disk|DVD|Game)' +
+# Examples: "(Disc 1 of 3)", "[CD2]", "(Game Disc 1)" etc
+re_disc_info_pattern = ( '(\s*)' + '(\(|\[)' + '(CD|Disc|Disk|DVD|Game|Game\s*Disc)' +
                          '\s*(\d+)\s*\w*\s*(\d*)*' + '(\)|\])' )
 
 # Create a log file that will record all the details of each playlist created, which includes
-# the full file paths of the playlists and the disc image files recorded.
+# the full file paths of the playlists and the disc image files recorded within.
 # Note: Log file creation is always overwritten, not appended too.
 create_log_file = True
 
@@ -94,6 +94,8 @@ from os import startfile as OpenFile, walk as Search
 import re
 import sys
 
+FORMAT_NAME = 0
+SEARCHABLE = 1
 LOG_DATA = 137
 NOT_SAVED = 0
 SAVED = 1
@@ -150,7 +152,8 @@ def findMultiDiscGames(dir_path, multi_disc_games_found):
             file_ext = file_path.suffix.casefold()
             #print(f'File: {file_path}')
             
-            if file_ext in disc_extensions.keys(): # Only Discs
+            # Only discs images that are search enabled
+            if disc_extensions.get(file_ext, ['',False])[SEARCHABLE]:
                 
                 game_title = re_game_title_compiled_pattern.match(file_path.stem).group().strip()
                 # "Path" will be use to differentiate between games with the same name. Not an actual path.
@@ -211,7 +214,7 @@ def findMultiDiscGames(dir_path, multi_disc_games_found):
                                 
                                 playlist_file_name = f'{game.name}{matching_game_info}'
                                 if seperate_disc_formats:
-                                    playlist_file_name = f'{playlist_file_name} ({disc_extensions.get(file_ext, file_ext)})'
+                                    playlist_file_name = f'{playlist_file_name} ({disc_extensions.get(file_ext, [file_ext])[FORMAT_NAME]})'
                                 
                                 playlist_file_path = Path(PurePath().joinpath(root, f'{playlist_file_name}.m3u'))
                                 
@@ -225,12 +228,12 @@ def findMultiDiscGames(dir_path, multi_disc_games_found):
                         
                         else:
                             if seperate_disc_formats:
-                                playlist_file_name = f'{playlist_file_name} ({disc_extensions.get(file_ext, file_ext)})'
+                                playlist_file_name = f'{playlist_file_name} ({disc_extensions.get(file_ext, [file_ext])[FORMAT_NAME]})'
                             playlist_file_path = Path(PurePath().joinpath(root, f'{playlist_file_name}.m3u'))
                         
                         # Now that playlist are being seperated, rename previous playlist using previous file extension.
                         if seperate_disc_formats:
-                            previous_playlist_file_name_rename = f'{previous_playlist_file_name} ({disc_extensions.get(previous_file_ext, previous_file_ext)})'
+                            previous_playlist_file_name_rename = f'{previous_playlist_file_name} ({disc_extensions.get(previous_file_ext, [previous_file_ext])[FORMAT_NAME]})'
                             previous_playlist_file_path_rename = Path(PurePath().joinpath(root, f'{previous_playlist_file_name_rename}.m3u'))
                             previous_playlist_file_path = Path(PurePath().joinpath(root, f'{previous_playlist_file_name}.m3u'))
                             if (playlist_file_path not in multi_disc_games_found[game].keys()
@@ -351,7 +354,7 @@ def checkForCompilationGame(multi_disc_games_found, possible_compilation_game, p
         playlist_file_name = f'{possible_compilation_game.name}{game_info}'
         for path in disc_paths:
             if seperate_disc_formats:
-                playlist_file_name = f'{possible_compilation_game.name}{game_info} ({disc_extensions.get(path.suffix, path.suffix)})'
+                playlist_file_name = f'{possible_compilation_game.name}{game_info} ({disc_extensions.get(path.suffix, [path.suffix])[FORMAT_NAME]})'
             
             playlist_file_path = Path(PurePath().joinpath(possible_compilation_game.parent, f'{playlist_file_name}.m3u'))
             if playlist_file_path in playlists.keys():
@@ -440,10 +443,19 @@ def checkForDupeGames(multi_disc_games_found, playlist_count):
                                 [f'"{str(path)}"' for path in multi_disc_games_found[game_one][playlist_path_one]]
                             )
                             
-                            if save_compilation_playlists_one_level_up:
+                            if save_playlists_in_common_directory:
+                                common_path_found = False
+                                for root_path_one in playlist_path_one.parents:
+                                    for root_path_two in playlist_path_two.parents:
+                                        if str(root_path_one) == str(root_path_two):
+                                            common_path_found = True
+                                            break
+                                    if common_path_found: break
+                                
                                 disc_list = multi_disc_games_found[game_one].pop(playlist_path_one)
                                 compilation_playlist_file_path = Path(PurePath().joinpath(
-                                    game_one.parents[1], playlist_path_one.name
+                                    #game_one.parents[1], playlist_path_one.name
+                                    root_path_one, playlist_path_one.name
                                 ))
                                 multi_disc_games_found[game_one][compilation_playlist_file_path] = disc_list
                                 multi_disc_games_found = setMultDiscGameType(multi_disc_games_found, game_one, COMPILATION_UP_ONE)
@@ -637,8 +649,9 @@ def createPlaylists(multi_disc_games_found):
 ### Create log file for all playlists created.
 ###     (multi_disc_games_found) Dictionary of all multi-disc games and the file paths of
 ###                              the playlist to be created with the paths to each disc.
+###     (log_file_path) Path of a log file.
 ###     --> Returns a [Boolean]
-def createLogFile(multi_disc_games_found):
+def createLogFile(multi_disc_games_found, log_file_path = None):
     log_file_created = False
     
     if type(multi_disc_games_found) == dict and multi_disc_games_found.get(LOG_DATA):
@@ -647,7 +660,7 @@ def createLogFile(multi_disc_games_found):
         playlists_overwritten = multi_disc_games_found[LOG_DATA][OVERWRITTEN]
         playlists_save_errors = multi_disc_games_found[LOG_DATA][ERROR_NOT_SAVED]
     else:
-        print('\nSomething went wrong creating log file.')
+        print('\nNo playlist log data found.')
         return False
     
     # Print general details of playlist creation
@@ -671,9 +684,10 @@ def createLogFile(multi_disc_games_found):
     
     if create_log_file:
         
-        root_path = Path(__file__).parent
-        log_file_name = f'{Path(__file__).stem}__log.txt'
-        log_file_path = Path(PurePath().joinpath(root_path, log_file_name))
+        if not log_file_path:
+            root_path = Path(__file__).parent
+            log_file_name = f'{Path(__file__).stem}__log.txt'
+            log_file_path = Path(PurePath().joinpath(root_path, log_file_name))
         
         # Separate by game type
         multi_disc_games = []
