@@ -19,8 +19,11 @@ TODO:
     [X] Detect multi-disc games without disc numbers, but with disc titles or version text.
     [X] Option for relative disc paths in playlists.
     [] Option to save all playlist in a single separate directory.
-    [] Update existing playlists only if new links are to be added/removed/reordered. Option to not reorder.
+    [X] Update existing playlists only if new links are to be added/removed/reordered.
+        Option to not reorder.
     [] GUI
+    [] Check all existing playlist for disc/file paths that no longer exists. Even if
+       they're not being updated.
 
 '''
 
@@ -28,7 +31,10 @@ TODO:
 # Set this to False and this script will just run, create the playlists, and close.
 loop_script = True
 
-# If you don't want existing playlist files overwritten, set this to False.
+# Playlists will only be overwritten if there are new disc paths to be added. However, if
+# you don't ever want existing playlist files overwritten, set this to False.
+# Note: When adding new disc paths to an existing playlist, old disc/file paths will be
+# removed if they no longer exists.
 overwrite_playlists = True
 
 # If your game's disc image format is not included below add it now.
@@ -42,7 +48,11 @@ disc_extensions = { '.chd' : ['CHD', True],  # A CHD image file (Compressed Hunk
                   }
 
 # Use relative disc paths in playlists instead of full absolute paths, for better portability.
-use_relative_paths = False
+use_relative_paths = True
+
+# If existing playlist are to be updated and overwritten then append new disc paths to the
+# end and do not reorder the disc paths.
+keep_existing_playlist_disc_order = False
 
 # This script will automatically make separate playlists for different disc formats of the
 # same game. If you have any of your games in multiple formats and want them all placed in
@@ -97,10 +107,11 @@ import sys
 FORMAT_NAME = 0
 SEARCHABLE = 1
 LOG_DATA = 137
-NOT_SAVED = 0
-SAVED = 1
-OVERWRITTEN = 2
-ERROR_NOT_SAVED = 3
+NOT_OVERWRITTEN = 0
+NOT_UPDATED = 1
+SAVED = 2
+UPDATED = 3
+ERROR_NOT_SAVED = 4
 GAME_TYPE = 0
 MULTI_DISC = 10
 COMPILATION = 11
@@ -318,9 +329,6 @@ def findMultiDiscGames(dir_path, multi_disc_games_found):
 def checkForCompilationGame(multi_disc_games_found, possible_compilation_game, possible_compilation_disc_paths, playlist_count):
     
     if len(possible_compilation_disc_paths) > 1:
-        print('--------------------------------------------------------------------------')
-        print(f'-Compilation Game Found: {possible_compilation_game.name}')
-        print('--------------------------------------------------------------------------')
         all_game_info_list = []
         matching_game_info_list = []
         disc_count = len(possible_compilation_disc_paths)
@@ -348,6 +356,16 @@ def checkForCompilationGame(multi_disc_games_found, possible_compilation_game, p
                 if gi not in matching_game_info_list:
                     matching_game_info_list.append(gi)
         game_info = ''.join(matching_game_info_list)
+        
+        # If there's no matching Game Info then it's very likely this is the same game from different regions.
+        ## TODO: Games with a mixture of different regions, disc titles, and/or different versions will be cought in this.
+        ## TODO: Should there be an option to add all regions to a sigle compilation playlist?
+        if not game_info:
+            return multi_disc_games_found, playlist_count
+        
+        print('--------------------------------------------------------------------------')
+        print(f'-Compilation Game Found: {possible_compilation_game.name}')
+        print('--------------------------------------------------------------------------')
         
         # Create New Playlist (split if different disc formats)
         playlists = {}
@@ -438,7 +456,6 @@ def checkForDupeGames(multi_disc_games_found, playlist_count):
                             dupe_games_to_remove.append(game_two)
                             playlist_count -= 1
                             
-                            #game_file_names = [path.name for path in multi_disc_games_found[game_one][playlist_path_one]]
                             game_file_paths = '\n              '.join(
                                 [f'"{str(path)}"' for path in multi_disc_games_found[game_one][playlist_path_one]]
                             )
@@ -547,14 +564,14 @@ def setMultDiscGameType(multi_disc_games_found, game, game_type = MULTI_DISC):
 ###                              the playlist to be created with the paths to each disc.
 ###     --> Returns a [Dictionary]
 def createPlaylists(multi_disc_games_found):
-    playlists_not_created, new_playlists_created = 0,0
-    playlists_overwritten, playlists_save_errors = 0,0
-    playlist_creation = NOT_SAVED
+    playlists_not_overwritten, playlists_not_updated, new_playlists_created = 0,0,0
+    playlists_updated, playlist_save_errors = 0,0
+    playlist_creation = NOT_UPDATED
     
     multi_disc_games_found_copy = multi_disc_games_found.copy()
     
     if LOG_DATA not in multi_disc_games_found.keys():
-        multi_disc_games_found[LOG_DATA] = [0,0,0,0]
+        multi_disc_games_found[LOG_DATA] = [0,0,0,0,0]
     
     print('\n--------------------------------------------------------------------------')
     print('Now creating M3U Playlists For All Multi-Disc Games Found')
@@ -567,7 +584,6 @@ def createPlaylists(multi_disc_games_found):
         playlist_number = 0
         for playlist_path, game_disc_paths in playlists.copy().items():
             
-            #if len(game_disc_paths) > 1 and type(playlist_path).__name__.find('Path') > -1:
             if playlist_path != LOG_DATA and len(game_disc_paths) > 1:
                 
                 playlist_number += 1
@@ -577,13 +593,88 @@ def createPlaylists(multi_disc_games_found):
                 
                 if playlist_number == 1:
                     print('--------------------------------------------------------------------------')
-                    if multi_disc_games_found[game].get(LOG_DATA, [MULTI_DISC])[GAME_TYPE]:
+                    if multi_disc_games_found[game].get(LOG_DATA, [MULTI_DISC])[GAME_TYPE] > MULTI_DISC:
                         print(f'-Compilation Game Title: {game.name}')
                     else:
                         print(f'-Multi-Disc Game Title: {game.name}')
                     print('--------------------------------------------------------------------------')
                 
                 print(f'--Playlist Path: {playlist_path}')
+                
+                game_disc_paths_removed = []
+                
+                if Path.exists(playlist_path) and overwrite_playlists:
+                    
+                    ## TODO: Record removed disc paths to show in log?
+                    
+                    # Read existing playlist file and get the disc paths.
+                    existing_playlist_disc = playlist_path.read_text().split('\n')
+                    
+                    # Create absolute disc paths of the strings
+                    existing_playlist_disc_paths = []
+                    existing_relative_disc_paths_found = False
+                    for existing_disc in existing_playlist_disc:
+                        existing_disc_path = Path(existing_disc)
+                        if PurePath.is_absolute(existing_disc_path):
+                            existing_playlist_disc_paths.append(existing_disc_path)
+                        else:
+                            existing_relative_disc_paths_found = True
+                            existing_disc_path = Path(PurePath.joinpath(playlist_path.parent, existing_disc_path))
+                            existing_playlist_disc_paths.append(existing_disc_path)
+                    
+                    # Check if any new disc paths are to be added to already existing playlist.
+                    new_playlist_disc_paths = []
+                    for disc_path in game_disc_paths:
+                        if disc_path not in existing_playlist_disc_paths:
+                            new_playlist_disc_paths.append(disc_path)
+                    
+                    # Only overwrite a playlist if there are new disc paths to add.
+                    ## TODO: check all playlist later for disc paths that no longer exists and remove them.
+                    ## Delete playlist if all paths no long exists, user option?
+                    if new_playlist_disc_paths:
+                        
+                        existing_playlist_disc_paths.extend(new_playlist_disc_paths)
+                        if not keep_existing_playlist_disc_order:
+                            existing_playlist_disc_paths.sort()
+                        
+                        game_disc_paths = []
+                        i = 0
+                        for existing_disc_path in existing_playlist_disc_paths:
+                            if Path.exists(existing_disc_path):
+                                game_disc_paths.append(existing_disc_path)
+                            else:
+                                if existing_relative_disc_paths_found:
+                                    # Add the relative string path instead
+                                    game_disc_paths_removed.append(existing_playlist_disc[i])
+                                else:
+                                    game_disc_paths_removed.append(existing_disc_path)
+                            i += 1
+                        
+                        playlists_updated += 1
+                        playlist_creation = UPDATED
+                    
+                    # Disc paths are changeing from relative to absolute
+                    elif existing_relative_disc_paths_found and not use_relative_paths:
+                        playlists_updated += 1
+                        playlist_creation = UPDATED
+                    
+                    # Disc paths are changeing from absolute to relative
+                    elif not existing_relative_disc_paths_found and use_relative_paths:
+                        playlists_updated += 1
+                        playlist_creation = UPDATED
+                    
+                    # Nothing new to add to playlist, so no need to overwrite.
+                    else:
+                        playlists_not_updated += 1
+                        playlist_creation = NOT_UPDATED
+                
+                elif Path.exists(playlist_path) and not overwrite_playlists:
+                    playlists_not_overwritten += 1
+                    playlist_creation = NOT_OVERWRITTEN
+                
+                else:
+                    new_playlists_created += 1
+                    playlist_creation = SAVED
                 
                 disc_number = 0
                 for disc_path in game_disc_paths:
@@ -598,18 +689,16 @@ def createPlaylists(multi_disc_games_found):
                     else:
                         print(f'---Disc #{disc_number} Path: {disc_path}')
                 
-                if Path.exists(playlist_path) and overwrite_playlists:
-                    playlists_overwritten += 1
-                    playlist_creation = OVERWRITTEN
-                    
-                elif Path.exists(playlist_path) and not overwrite_playlists:
-                    playlists_not_created += 1
-                    playlist_creation = NOT_SAVED
-                else:
-                    new_playlists_created += 1
-                    playlist_creation = SAVED
+                for removed_disc_path in game_disc_paths_removed:
+                    if existing_relative_disc_paths_found:
+                        if str(removed_disc_path) in existing_playlist_disc:
+                            print(f'---Relative Disc Path REMOVED: {removed_disc_path}')
+                        else:
+                            print(f'---Relative Disc Path REMOVED: {removed_disc_path.name}')
+                    else:
+                        print(f'---Disc Path REMOVED: {removed_disc_path}')
                 
-                if playlist_creation > NOT_SAVED:
+                if playlist_creation > NOT_UPDATED:
                     try: # Writing the disc path to the playlist file.
                         if use_relative_paths:
                             if multi_disc_games_found[game][LOG_DATA][GAME_TYPE] == COMPILATION_UP_ONE:
@@ -629,19 +718,20 @@ def createPlaylists(multi_disc_games_found):
                     except Exception as error:
                         print(f'\nCouldn\'t save playlist file due to {type(error).__name__}: {type(error).__doc__}')
                         print(f'{error}\n')
-                        if playlist_creation == OVERWRITTEN:
-                            playlists_overwritten -= 1
+                        if playlist_creation == UPDATED:
+                            playlists_updated -= 1
                         elif playlist_creation == SAVED:
                             new_playlists_created -= 1
-                        playlists_save_errors += 1
+                        playlist_save_errors += 1
                         playlist_creation = f'{type(error).__name__}: {type(error).__doc__}'
                 
                 multi_disc_games_found[game][LOG_DATA].append(playlist_creation)
     
-    multi_disc_games_found[LOG_DATA][NOT_SAVED] += playlists_not_created
+    multi_disc_games_found[LOG_DATA][NOT_OVERWRITTEN] += playlists_not_overwritten
+    multi_disc_games_found[LOG_DATA][NOT_UPDATED] += playlists_not_updated
     multi_disc_games_found[LOG_DATA][SAVED] += new_playlists_created
-    multi_disc_games_found[LOG_DATA][OVERWRITTEN] += playlists_overwritten
-    multi_disc_games_found[LOG_DATA][ERROR_NOT_SAVED] += playlists_save_errors
+    multi_disc_games_found[LOG_DATA][UPDATED] += playlists_updated
+    multi_disc_games_found[LOG_DATA][ERROR_NOT_SAVED] += playlist_save_errors
     
     return multi_disc_games_found
 
@@ -655,10 +745,11 @@ def createLogFile(multi_disc_games_found, log_file_path = None):
     log_file_created = False
     
     if type(multi_disc_games_found) == dict and multi_disc_games_found.get(LOG_DATA):
-        playlists_not_created = multi_disc_games_found[LOG_DATA][NOT_SAVED]
+        playlists_not_overwritten = multi_disc_games_found[LOG_DATA][NOT_OVERWRITTEN]
+        playlists_not_updated = multi_disc_games_found[LOG_DATA][NOT_UPDATED]
         new_playlists_created = multi_disc_games_found[LOG_DATA][SAVED]
-        playlists_overwritten = multi_disc_games_found[LOG_DATA][OVERWRITTEN]
-        playlists_save_errors = multi_disc_games_found[LOG_DATA][ERROR_NOT_SAVED]
+        playlists_updated = multi_disc_games_found[LOG_DATA][UPDATED]
+        playlist_save_errors = multi_disc_games_found[LOG_DATA][ERROR_NOT_SAVED]
     else:
         print('\nNo playlist log data found.')
         return False
@@ -670,16 +761,19 @@ def createLogFile(multi_disc_games_found, log_file_path = None):
     text_lines.append('===================================')
     text_lines.append(f'- New Playlist Created: {new_playlists_created}')
     if overwrite_playlists:
-        text_lines.append(f'- Playlist Overwritten: {playlists_overwritten}')
-    elif playlists_not_created:
-        text_lines.append(f'- Playlist Not Created: {playlists_not_created}')
-    if playlists_save_errors:
-        text_lines.append(f'- Playlist Save Errors: {playlists_save_errors}')
+        text_lines.append(f'- Playlists Updated: {playlists_updated}')
+    if playlists_not_updated:
+        text_lines.append(f'- Playlists Not Updated: {playlists_not_updated}')
+    if playlists_not_overwritten:
+        text_lines.append(f'- Playlists Not Overwritten: {playlists_not_overwritten}')
+    if playlist_save_errors:
+        text_lines.append(f'- Playlist Save Errors: {playlist_save_errors}')
     
     print_text_lines = text_lines.copy()
     print('\n'+'\n'.join(print_text_lines))
     
-    if new_playlists_created + playlists_overwritten == 0:
+    # Only create a log file when playlists are actually created/overwritten or there are errors.
+    if new_playlists_created + playlists_updated + playlist_save_errors == 0:
         return False
     
     if create_log_file:
@@ -758,11 +852,12 @@ def createLogFile(multi_disc_games_found, log_file_path = None):
 ###     (text_lines) A list of lines to be printed.
 ###     --> Returns a [List]
 def printGamePlaylistDetails(multi_disc_games_found, game, text_lines = []):
-    playlist_creation = ['  << Already Exists / Not Overwritten >>', # NOT_SAVED
-                         '  << NEW >>', # SAVED
-                         '', # OVERWRITTEN
+    playlist_creation = ['  << Not Overwritten >>', # NOT_OVERWRITTEN
+                         '  << No New Discs To Add/Remove (Not Updated) >>', # NOT_UPDATED
+                         '  << NEW PLAYLIST >>', # SAVED
+                         '  << New Disc Paths Added/Removed (Updated) >>', # UPDATED
                          '  << Not Saved Due To'] # ERROR_NOT_SAVED
-    game_log_data = multi_disc_games_found[game].get(LOG_DATA, [0,0,0,0])
+    game_log_data = multi_disc_games_found[game].get(LOG_DATA, [0,0,0,0,0])
     
     playlist_number = 1
     for playlist_path, game_disc_paths in multi_disc_games_found[game].items():
@@ -821,7 +916,7 @@ if __name__ == '__main__':
         dir_paths = [Path(__file__).parent]
     
     multi_disc_games_found = {}
-    new_playlists_created, playlists_overwritten, n = 0,0,0
+    new_playlists_created, playlists_updated, n = 0,0,0
     loop = True
     while loop:
         i = 0
@@ -835,18 +930,20 @@ if __name__ == '__main__':
                 
                 multi_disc_games_found = createPlaylists(multi_disc_games_found)
                 
-                playlists_not_created = multi_disc_games_found[LOG_DATA][NOT_SAVED]
+                playlists_not_overwritten = multi_disc_games_found[LOG_DATA][NOT_OVERWRITTEN]
+                playlists_not_updated = multi_disc_games_found[LOG_DATA][NOT_UPDATED]
                 new_playlists_created = multi_disc_games_found[LOG_DATA][SAVED]
-                playlists_overwritten = multi_disc_games_found[LOG_DATA][OVERWRITTEN]
+                playlists_updated = multi_disc_games_found[LOG_DATA][UPDATED]
+                playlist_save_errors = multi_disc_games_found[LOG_DATA][ERROR_NOT_SAVED]
                 
-                if new_playlists_created or playlists_overwritten or playlists_not_created:
-                    print(f'\nNew Playlists Created: {new_playlists_created}')
-                    if overwrite_playlists:
-                        print(f'Playlists Overwritten: {playlists_overwritten}')
-                    else:
-                        print(f'Playlists Not Created: {playlists_not_created}')
-                else:
-                    print('No Playlists Created')
+                #if new_playlists_created or playlists_updated or playlists_not_updated:
+                print(f'\nPlaylists Newly Created: {new_playlists_created}')
+                print(f'Playlists Updated: {playlists_updated}')
+                print(f'Playlists Not Updated: {playlists_not_updated}')
+                print(f'Playlists Not Overwritten: {playlists_not_overwritten}')
+                print(f'Playlist Save Errors: {playlist_save_errors}')
+                #else:
+                    #print('No Playlists Created')
             
             elif n > 0:
                 print('\nNo new multi-disc games found.')
@@ -879,3 +976,5 @@ if __name__ == '__main__':
     if log_file_created:
         print('--> Check log for more details.')
         openLogFile(log_file_created)
+    else:
+        print('No log file necessary.')
