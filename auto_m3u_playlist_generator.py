@@ -18,7 +18,7 @@ TODO:
         different games from the same package.
     [X] Detect multi-disc games without disc numbers, but with disc titles or version text.
     [X] Option for relative disc paths in playlists.
-    [] Option to save all playlist in a single separate directory.
+    [X] Option to save all playlist in a single separate directory.
     [X] Update existing playlists only if new links are to be added/removed/reordered.
         Option to not reorder.
     [] GUI
@@ -37,6 +37,12 @@ loop_script = True
 # removed if they no longer exists.
 overwrite_playlists = True
 
+# Confirm disc file paths in "all" playlists have working links. Disc paths will be removed if
+# if they no longer link to an existing file. And if a playlist has no existing disc file
+# paths, it too will be deleted.
+# Note: Overwriting of playlists must be enabled.
+verify_all_playlists = True ## TODO
+
 # If your game's disc image format is not included below add it now.
 # 1. Image File Extension
 # 2. Image Format Name (used in playlist file names, only when separated)
@@ -48,7 +54,7 @@ disc_extensions = { '.chd' : ['CHD', True],  # A CHD image file (Compressed Hunk
                   }
 
 # Use relative disc paths in playlists instead of full absolute paths, for better portability.
-use_relative_paths = True
+use_relative_paths = False
 
 # If existing playlist are to be updated and overwritten then append new disc paths to the
 # end and do not reorder the disc paths.
@@ -73,6 +79,14 @@ ignore_compilation_discs = False
 # a common directory one or more levels up. If set to False the playlist will be saved in the
 # directory of the first disc found.
 save_playlists_in_common_directory = True
+
+# If left blank (by default), playlist will be saved with the game discs in a common directory.
+# Enter a directory path here and all playlists will be saved in that directory. Also if
+# playlists and discs are on different drives (no common directory) then "use_relative_paths"
+# will be ignored and absoulte paths with be forced.
+# Note: This directory path must exist ahead of time and will not be created by this script.
+#       While this could be made a relative path, making it an absolute path is recommended.
+save_all_playlists_in = r''
 
 # You shouldn't have to edit these as they just get the "Game Title" and "Game Info" text.
 # However, if you have some unique file naming conventions for your games and know how to
@@ -112,10 +126,12 @@ NOT_UPDATED = 1
 SAVED = 2
 UPDATED = 3
 ERROR_NOT_SAVED = 4
+GAME_INFO = 0
 GAME_TYPE = 0
+GAME_PATH_RELATIVE = 1 ## TODO: no longer needed, delete
 MULTI_DISC = 10
 COMPILATION = 11
-COMPILATION_UP_ONE = 12
+COMPILATION_UP_ONE = 12 ## TODO: no longer needed, delete
 DIFF_VERSION = 13
 UNKNOWN = 14
 
@@ -322,7 +338,7 @@ def findMultiDiscGames(dir_path, multi_disc_games_found):
 ### Check for compilation games with disc titles instead of disk numbers.
 ###     (multi_disc_games_found) Dictionary of all multi-disc games and the file paths of
 ###                              the playlist to be created with the paths to each disc.
-###     (possible_compilation_game) The game that was last detected as a posible compilation.
+###     (possible_compilation_game) The game that was last detected as a possible compilation.
 ###     (possible_compilation_disc_paths) A list of compilation disc paths.
 ###     (playlist_count) Amount of new playlists to be created.
 ###     --> Returns a [Dictionary] and [Integer]
@@ -461,18 +477,11 @@ def checkForDupeGames(multi_disc_games_found, playlist_count):
                             )
                             
                             if save_playlists_in_common_directory:
-                                common_path_found = False
-                                for root_path_one in playlist_path_one.parents:
-                                    for root_path_two in playlist_path_two.parents:
-                                        if str(root_path_one) == str(root_path_two):
-                                            common_path_found = True
-                                            break
-                                    if common_path_found: break
+                                common_root_path = findCommonDirectoryPath(playlist_path_one, playlist_path_two)
                                 
                                 disc_list = multi_disc_games_found[game_one].pop(playlist_path_one)
                                 compilation_playlist_file_path = Path(PurePath().joinpath(
-                                    #game_one.parents[1], playlist_path_one.name
-                                    root_path_one, playlist_path_one.name
+                                    common_root_path, playlist_path_one.name
                                 ))
                                 multi_disc_games_found[game_one][compilation_playlist_file_path] = disc_list
                                 multi_disc_games_found = setMultDiscGameType(multi_disc_games_found, game_one, COMPILATION_UP_ONE)
@@ -544,6 +553,22 @@ def compareTwoGameInfoLists(game_info_list_one, game_info_list_two):
     return matching_game_info_list
 
 
+### Compare two file paths and return the common directory path between them.
+###     (path_one) First Path
+###     (path_two) Second Path
+###     --> Returns a [Path]
+def findCommonDirectoryPath(path_one, path_two):
+    common_path_found = None
+    for root_path_one in path_one.parents:
+        for root_path_two in path_two.parents:
+            if str(root_path_one) == str(root_path_two):
+                common_path_found = root_path_one
+                break
+        if common_path_found: break
+    
+    return common_path_found
+
+
 ### Set a multi-disc game's disc type.
 ###     (multi_disc_games_found) Dictionary of all multi-disc games and the file paths of
 ###                              the playlist to be created with the paths to each disc.
@@ -552,11 +577,58 @@ def compareTwoGameInfoLists(game_info_list_one, game_info_list_two):
 ###     --> Returns a [Dictionary]
 def setMultDiscGameType(multi_disc_games_found, game, game_type = MULTI_DISC):
     if LOG_DATA not in multi_disc_games_found[game].keys():
-        multi_disc_games_found[game][LOG_DATA] = [game_type]
+        #multi_disc_games_found[game][LOG_DATA] = [game_type]
+        multi_disc_games_found[game][LOG_DATA] = [[game_type, use_relative_paths]]
     else:
-        multi_disc_games_found[game][LOG_DATA][GAME_TYPE] = game_type
+        multi_disc_games_found[game][LOG_DATA][GAME_INFO][GAME_TYPE] = game_type
     
     return multi_disc_games_found
+
+
+### If all playlist are to be placed into a single directory, check if the directory
+### exists and return the updated playlist path.
+###     (playlist_path) Path to a playlist file.
+###     --> Returns a [Boolean] and [Path]
+def samePlaylistDirectoryCheck(playlist_path):
+    if save_all_playlists_in:
+        if Path(save_all_playlists_in).exists():
+            all_playlist_dir = Path(save_all_playlists_in)
+        else: # possible relative path?
+            all_playlist_dir = Path(PurePath.joinpath(Path(__file__).parent, save_all_playlists_in))
+        if all_playlist_dir.exists():
+            playlist_path = Path(PurePath.joinpath(all_playlist_dir, playlist_path.name))
+    
+    return playlist_path
+
+
+### Return a List of disc file Paths that are relative to it's playlist file Path.
+###     (playlist_path) Path to a playlist file.
+###     (game_disc_paths) A List of Paths to disc files.
+###     --> Returns a [List]
+def getRelativeDiscPaths(playlist_path, game_disc_paths):
+    relative_disc_paths = []
+    
+    for disc_path in game_disc_paths:
+        
+        common_root_path = findCommonDirectoryPath(playlist_path, disc_path)
+        if common_root_path:
+            levels_up = len(playlist_path.parts) - len(common_root_path.parts)
+            levels_up_str = ''
+            i, up = 0,1
+            while up < levels_up:
+                levels_up_str += '../'
+                up += 1
+            relative_disc_path = Path(levels_up_str)
+            for disc_part in disc_path.parts:
+                if i >= len(common_root_path.parts) or disc_part != common_root_path.parts[i]:
+                    relative_disc_path = Path(PurePath.joinpath(relative_disc_path, disc_part))
+                i += 1
+        else: # Can't use relative path, sticking with the absolute disc path
+            relative_disc_path = disc_path
+        
+        relative_disc_paths.append(relative_disc_path)
+    
+    return relative_disc_paths
 
 
 ### Create playlists for all multi-disc games found.
@@ -580,8 +652,9 @@ def createPlaylists(multi_disc_games_found):
     for game, playlists in multi_disc_games_found_copy.items():
         if game == LOG_DATA:
             continue
-
+        
         playlist_number = 0
+        force_absolute_paths = False
         for playlist_path, game_disc_paths in playlists.copy().items():
             
             if playlist_path != LOG_DATA and len(game_disc_paths) > 1:
@@ -593,12 +666,14 @@ def createPlaylists(multi_disc_games_found):
                 
                 if playlist_number == 1:
                     print('--------------------------------------------------------------------------')
-                    if multi_disc_games_found[game].get(LOG_DATA, [MULTI_DISC])[GAME_TYPE] > MULTI_DISC:
+                    if multi_disc_games_found[game].get(LOG_DATA, [[MULTI_DISC]][GAME_TYPE])[GAME_INFO][GAME_TYPE] > MULTI_DISC:
                         print(f'-Compilation Game Title: {game.name}')
                     else:
                         print(f'-Multi-Disc Game Title: {game.name}')
                     print('--------------------------------------------------------------------------')
                 
+                org_playlist_path = playlist_path
+                playlist_path = samePlaylistDirectoryCheck(playlist_path)
                 print(f'--Playlist Path: {playlist_path}')
                 
                 game_disc_paths_removed = []
@@ -608,18 +683,29 @@ def createPlaylists(multi_disc_games_found):
                     ## TODO: Record removed disc paths to show in log?
                     
                     # Read existing playlist file and get the disc paths.
-                    existing_playlist_disc = playlist_path.read_text().split('\n')
+                    existing_playlist_discs = playlist_path.read_text().split('\n')
                     
                     # Create absolute disc paths of the strings
                     existing_playlist_disc_paths = []
                     existing_relative_disc_paths_found = False
-                    for existing_disc in existing_playlist_disc:
+                    for existing_disc in existing_playlist_discs:
+                        
                         existing_disc_path = Path(existing_disc)
                         if PurePath.is_absolute(existing_disc_path):
                             existing_playlist_disc_paths.append(existing_disc_path)
+                            
+                            # Don't update existing playlists if not needed when relative paths are in use, but
+                            # absolute paths are forced because playlist and discs are on different roots/drives.
+                            if playlist_path.parts[0] != existing_disc_path.parts[0]:
+                                force_absolute_paths = True
+                        
                         else:
                             existing_relative_disc_paths_found = True
-                            existing_disc_path = Path(PurePath.joinpath(playlist_path.parent, existing_disc_path))
+                            if existing_disc_path.parts[0] == '..':
+                                existing_disc_path = Path(PurePath.joinpath(playlist_path.parent, existing_disc_path)).resolve()
+                            else:
+                                levels_up = len(existing_disc_path.parts)-1
+                                existing_disc_path = Path(PurePath.joinpath(game.parents[levels_up], existing_disc_path))
                             existing_playlist_disc_paths.append(existing_disc_path)
                     
                     # Check if any new disc paths are to be added to already existing playlist.
@@ -628,38 +714,41 @@ def createPlaylists(multi_disc_games_found):
                         if disc_path not in existing_playlist_disc_paths:
                             new_playlist_disc_paths.append(disc_path)
                     
-                    # Only overwrite a playlist if there are new disc paths to add.
+                    # Only overwrite/update a playlist if there are new disc paths to add.
                     ## TODO: check all playlist later for disc paths that no longer exists and remove them.
-                    ## Delete playlist if all paths no long exists, user option?
+                    ##       Delete playlist if all paths no long exists, user option?
                     if new_playlist_disc_paths:
                         
                         existing_playlist_disc_paths.extend(new_playlist_disc_paths)
                         if not keep_existing_playlist_disc_order:
-                            existing_playlist_disc_paths.sort()
+                            existing_playlist_disc_paths.sort() ## TODO: discs after 9 will not order correctly 1, 10, 2,... custom sorter?
                         
                         game_disc_paths = []
-                        i = 0
                         for existing_disc_path in existing_playlist_disc_paths:
                             if Path.exists(existing_disc_path):
                                 game_disc_paths.append(existing_disc_path)
                             else:
                                 if existing_relative_disc_paths_found:
-                                    # Add the relative string path instead
-                                    game_disc_paths_removed.append(existing_playlist_disc[i])
+                                    # Add the relative string path instead (lists won't line up if sorted, so must use "find")
+                                    for existing_disc_str in existing_playlist_discs:
+                                        if existing_disc_str.find(existing_disc_path.name) > -1:
+                                            break
+                                    game_disc_paths_removed.append(existing_disc_str)
                                 else:
                                     game_disc_paths_removed.append(existing_disc_path)
-                            i += 1
+                        
+                        multi_disc_games_found[game][org_playlist_path] = game_disc_paths # Updated
                         
                         playlists_updated += 1
                         playlist_creation = UPDATED
                     
                     # Disc paths are changeing from relative to absolute
-                    elif existing_relative_disc_paths_found and not use_relative_paths:
+                    elif existing_relative_disc_paths_found and not use_relative_paths and not force_absolute_paths:
                         playlists_updated += 1
                         playlist_creation = UPDATED
                     
                     # Disc paths are changeing from absolute to relative
-                    elif not existing_relative_disc_paths_found and use_relative_paths:
+                    elif not existing_relative_disc_paths_found and use_relative_paths and not force_absolute_paths:
                         playlists_updated += 1
                         playlist_creation = UPDATED
                     
@@ -676,22 +765,34 @@ def createPlaylists(multi_disc_games_found):
                     new_playlists_created += 1
                     playlist_creation = SAVED
                 
+                # Get relative disc paths if needed
+                if use_relative_paths and not force_absolute_paths:
+                    relative_disc_paths = getRelativeDiscPaths(playlist_path, game_disc_paths)
+                
                 disc_number = 0
                 for disc_path in game_disc_paths:
                     disc_number += 1
-                    if use_relative_paths:
-                        if multi_disc_games_found[game][LOG_DATA][GAME_TYPE] == COMPILATION_UP_ONE:
+                    
+                    # Second check to force absolute paths
+                    force_absolute_paths = False if playlist_path.parts[0] == disc_path.parts[0] else True
+                    
+                    if use_relative_paths and not force_absolute_paths:
+                        
+                        print(f'---Disc #{disc_number} Relative Path: {relative_disc_paths[disc_number-1]}')
+                        '''
+                        elif multi_disc_games_found[game][LOG_DATA][GAME_INFO][GAME_TYPE] == COMPILATION_UP_ONE:
                             relative_disc_path = Path(PurePath().joinpath(disc_path.parts[-2],
                                                                           disc_path.parts[-1]))
                             print(f'---Disc #{disc_number} Relative Path: {relative_disc_path}')
+                            input('COMPILATION_UP_ONE')
                         else:
-                            print(f'---Disc #{disc_number} Relative Path: {disc_path.name}')
+                            print(f'---Disc #{disc_number} Relative Path: {disc_path.name}')'''
                     else:
                         print(f'---Disc #{disc_number} Path: {disc_path}')
                 
                 for removed_disc_path in game_disc_paths_removed:
                     if existing_relative_disc_paths_found:
-                        if str(removed_disc_path) in existing_playlist_disc:
+                        if str(removed_disc_path) in existing_playlist_discs:
                             print(f'---Relative Disc Path REMOVED: {removed_disc_path}')
                         else:
                             print(f'---Relative Disc Path REMOVED: {removed_disc_path.name}')
@@ -699,9 +800,14 @@ def createPlaylists(multi_disc_games_found):
                         print(f'---Disc Path REMOVED: {removed_disc_path}')
                 
                 if playlist_creation > NOT_UPDATED:
+                    
                     try: # Writing the disc path to the playlist file.
-                        if use_relative_paths:
-                            if multi_disc_games_found[game][LOG_DATA][GAME_TYPE] == COMPILATION_UP_ONE:
+                        if use_relative_paths and not force_absolute_paths:
+                            
+                            playlist_path.write_text('\n'.join([str(path) for path in relative_disc_paths]),
+                                                     encoding='utf-8', errors='strict', newline=None)
+                            '''
+                            elif multi_disc_games_found[game][LOG_DATA][GAME_INFO][GAME_TYPE] == COMPILATION_UP_ONE:
                                 relative_disc_paths = []
                                 for disc_path in game_disc_paths:
                                     relative_disc_paths.append(Path(PurePath().joinpath(disc_path.parts[-2],
@@ -710,7 +816,8 @@ def createPlaylists(multi_disc_games_found):
                                                          encoding='utf-8', errors='strict', newline=None)
                             else:
                                 playlist_path.write_text('\n'.join([str(path.name) for path in game_disc_paths]),
-                                                         encoding='utf-8', errors='strict', newline=None)
+                                                         encoding='utf-8', errors='strict', newline=None)'''
+                        
                         else:
                             playlist_path.write_text('\n'.join([str(path) for path in game_disc_paths]),
                                                      encoding='utf-8', errors='strict', newline=None)
@@ -726,6 +833,7 @@ def createPlaylists(multi_disc_games_found):
                         playlist_creation = f'{type(error).__name__}: {type(error).__doc__}'
                 
                 multi_disc_games_found[game][LOG_DATA].append(playlist_creation)
+                #multi_disc_games_found[game][LOG_DATA][GAME_INFO][GAME_PATH_RELATIVE] = use_relative_paths if not force_absolute_paths else False
     
     multi_disc_games_found[LOG_DATA][NOT_OVERWRITTEN] += playlists_not_overwritten
     multi_disc_games_found[LOG_DATA][NOT_UPDATED] += playlists_not_updated
@@ -759,7 +867,7 @@ def createLogFile(multi_disc_games_found, log_file_path = None):
     text_lines.append('===================================')
     text_lines.append('= Auto M3U Playlist Generator Log =')
     text_lines.append('===================================')
-    text_lines.append(f'- New Playlist Created: {new_playlists_created}')
+    text_lines.append(f'- Playlists Newly Created: {new_playlists_created}')
     if overwrite_playlists:
         text_lines.append(f'- Playlists Updated: {playlists_updated}')
     if playlists_not_updated:
@@ -796,16 +904,16 @@ def createLogFile(multi_disc_games_found, log_file_path = None):
                 if playlist_path == LOG_DATA: continue
                 
                 if game_log_data:
-                    if game_log_data[GAME_TYPE] == MULTI_DISC:
+                    if game_log_data[GAME_INFO][GAME_TYPE] == MULTI_DISC:
                         if game not in multi_disc_games:
                             multi_disc_games.append(game)
                     
-                    elif (game_log_data[GAME_TYPE] == COMPILATION
-                       or game_log_data[GAME_TYPE] == COMPILATION_UP_ONE):
+                    elif (game_log_data[GAME_INFO][GAME_TYPE] == COMPILATION
+                       or game_log_data[GAME_INFO][GAME_TYPE] == COMPILATION_UP_ONE):
                             if game not in compilation_games:
                                 compilation_games.append(game)
                     
-                    elif game_log_data[GAME_TYPE] == DIFF_VERSION:
+                    elif game_log_data[GAME_INFO][GAME_TYPE] == DIFF_VERSION:
                         if game not in diff_version_games:
                             diff_version_games.append(game)
         
@@ -857,11 +965,16 @@ def printGamePlaylistDetails(multi_disc_games_found, game, text_lines = []):
                          '  << NEW PLAYLIST >>', # SAVED
                          '  << New Disc Paths Added/Removed (Updated) >>', # UPDATED
                          '  << Not Saved Due To'] # ERROR_NOT_SAVED
-    game_log_data = multi_disc_games_found[game].get(LOG_DATA, [0,0,0,0,0])
+    game_log_data = multi_disc_games_found[game].get(LOG_DATA, [[0,False],0,0,0,0,0])
     
     playlist_number = 1
     for playlist_path, game_disc_paths in multi_disc_games_found[game].items():
         if playlist_path == LOG_DATA: continue
+        
+        # Check if modifications should be made to playlist and disc paths before printing
+        playlist_path = samePlaylistDirectoryCheck(playlist_path)
+        if use_relative_paths:
+            relative_disc_paths = getRelativeDiscPaths(playlist_path, game_disc_paths)
         
         if playlist_number == 1:
             text_lines.append(f'\n-Game Title: {game.name}')
@@ -871,21 +984,30 @@ def printGamePlaylistDetails(multi_disc_games_found, game, text_lines = []):
         else: # Error
             save_info = f'{playlist_creation[ERROR_NOT_SAVED]} {game_log_data[playlist_number]} >>'
         
-        text_lines.append(f'--Playlist Path: {playlist_path}{save_info}')
+        text_lines.append(f'--Playlist Path: {playlist_path}')#{save_info}')
         playlist_number += 1
+        
+        text_lines.append(f'---File Contents Below:{save_info}')
         
         disc_number = 1
         while disc_number <= len(game_disc_paths):
             
-            if use_relative_paths:
-                if multi_disc_games_found[game][LOG_DATA][GAME_TYPE] == COMPILATION_UP_ONE:
+            force_absolute_paths = False if playlist_path.parts[0] == game_disc_paths[disc_number-1].parts[0] else True
+            
+            if use_relative_paths and not force_absolute_paths:# and game_log_data[GAME_INFO][GAME_PATH_RELATIVE]:
+                
+                #text_lines.append(f'---Disc #{disc_number} Relative Path: {relative_disc_paths[disc_number-1]}')
+                text_lines.append(f'   {relative_disc_paths[disc_number-1]}')
+                '''
+                elif game_log_data[GAME_INFO][GAME_TYPE] == COMPILATION_UP_ONE:
                     relative_disc_path = Path(PurePath().joinpath(game_disc_paths[disc_number-1].parts[-2],
                                                                   game_disc_paths[disc_number-1].parts[-1]))
                     text_lines.append(f'---Disc #{disc_number} Relative Path: {relative_disc_path}')
                 else:
-                    text_lines.append(f'---Disc #{disc_number} Relative Path: {game_disc_paths[disc_number-1].name}')
+                    text_lines.append(f'---Disc #{disc_number} Relative Path: {game_disc_paths[disc_number-1].name}')'''
             else:
-                text_lines.append(f'---Disc #{disc_number} Path: {game_disc_paths[disc_number-1]}')
+                #text_lines.append(f'---Disc #{disc_number} Path: {game_disc_paths[disc_number-1]}')
+                text_lines.append(f'   {game_disc_paths[disc_number-1]}')
             disc_number += 1
     
     return text_lines
@@ -955,7 +1077,6 @@ if __name__ == '__main__':
             if len(dir_paths) > i:
                 input(f'\nPress [Enter] to continue with next directory... {dir_paths[i]}')
             else:
-                #print('\nAll Done!')
                 try_again = loop_script
                 loop = loop_script
                 while try_again:
